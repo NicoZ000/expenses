@@ -1,7 +1,11 @@
 'use client'
 
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import { CATEGORIES, buildFilename } from '@/lib/categoryMap'
+import {
+  loadCache, recordMatch, lookupCache, getCacheStats,
+  type MatchCache, type CacheEntry
+} from '@/lib/matchCache'
 
 interface ExtractedExpense {
   id: string
@@ -26,6 +30,7 @@ interface ExtractedExpense {
   resolvedCategory?: string
   finalFilename?: string
   error?: string
+  fromCache?: boolean  // true = skipped API call
 }
 
 interface RatesInfo { display: string; fetchedDate: string }
@@ -45,10 +50,7 @@ function downloadFile(exp: ExtractedExpense) {
 }
 
 function downloadAll(exps: ExtractedExpense[]) {
-  // Stagger downloads slightly so browser doesn't block them
-  exps.forEach((exp, i) => {
-    setTimeout(() => downloadFile(exp), i * 300)
-  })
+  exps.forEach((exp, i) => setTimeout(() => downloadFile(exp), i * 300))
 }
 
 export default function Home() {
@@ -57,8 +59,19 @@ export default function Home() {
   const [processing, setProcessing] = useState(false)
   const [dragOver, setDragOver] = useState(false)
   const [reviewingId, setReviewingId] = useState<string | null>(null)
+  const [showCache, setShowCache] = useState(false)
+  const [cache, setCache] = useState<MatchCache>({})
   const fileInputRef = useRef<HTMLInputElement>(null)
   const processedFilenamesRef = useRef<string[]>([])
+
+  useEffect(() => {
+    setCache(loadCache())
+  }, [])
+
+  const updateCache = (merchant: string, category: string, source: 'auto' | 'manual') => {
+    if (!merchant) return
+    setCache(prev => recordMatch(prev, merchant, category, source))
+  }
 
   const ensureRates = async () => {
     if (rates) return
@@ -71,9 +84,26 @@ export default function Home() {
     try {
       const formData = new FormData()
       formData.append('file', expense.file)
+
+      // Always call API for OCR (date + amount extraction),
+      // but pass cache hint so API can skip classification if we have it
+      const cacheHint = expense.merchant ? lookupCache(cache, expense.merchant) : null
+
       const res = await fetch('/api/ocr', { method: 'POST', body: formData })
       const data = await res.json()
       if (data.error) throw new Error(data.error)
+
+      // Check cache after we have the merchant name from OCR
+      const cachedMatch = data.merchant ? lookupCache(cache, data.merchant) : null
+      let fromCache = false
+
+      if (cachedMatch && cachedMatch.hits >= 1 && data.date && !data.date_missing) {
+        // Cache hit — override category, skip review
+        data.category_code = cachedMatch.category
+        data.confidence = 'HIGH'
+        data.needs_review = false
+        fromCache = true
+      }
 
       const needsFullReview = data.needs_review && !data.date_missing
       const needsDateOnly = data.date_missing
@@ -82,6 +112,8 @@ export default function Home() {
       if (!needsFullReview && !needsDateOnly && data.date && data.category_code) {
         finalFilename = buildFilename(data.date, data.category_code, processedFilenamesRef.current)
         processedFilenamesRef.current.push(finalFilename)
+        // Save to cache
+        if (data.merchant) updateCache(data.merchant, data.category_code, 'auto')
       }
 
       setExpenses(prev => prev.map(e => e.id === expense.id ? {
@@ -90,6 +122,7 @@ export default function Home() {
         resolvedDate: data.date,
         resolvedCategory: data.category_code,
         finalFilename,
+        fromCache,
       } : e))
 
       if (needsFullReview || needsDateOnly) setReviewingId(expense.id)
@@ -108,7 +141,7 @@ export default function Home() {
     setProcessing(true)
     for (const expense of newExpenses) await processFile(expense)
     setProcessing(false)
-  }, [rates])
+  }, [rates, cache])
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault(); setDragOver(false); handleFiles(e.dataTransfer.files)
@@ -119,6 +152,8 @@ export default function Home() {
       if (e.id !== id) return e
       const filename = buildFilename(date, category, processedFilenamesRef.current)
       processedFilenamesRef.current.push(filename)
+      // Manual correction — save to cache with higher weight
+      if (e.merchant) updateCache(e.merchant, category, 'manual')
       return { ...e, resolvedDate: date, resolvedCategory: category, finalFilename: filename, status: 'done' }
     }))
     setReviewingId(null)
@@ -127,6 +162,8 @@ export default function Home() {
   const done = expenses.filter(e => e.status === 'done')
   const pending = expenses.filter(e => ['pending','processing'].includes(e.status))
   const review = expenses.filter(e => e.status === 'review')
+  const cacheStats = getCacheStats(cache)
+  const cachedCount = expenses.filter(e => e.fromCache).length
 
   return (
     <div className="min-h-screen bg-[#f8f8f6]">
@@ -136,9 +173,17 @@ export default function Home() {
             <h1 className="text-base font-semibold text-gray-900 tracking-tight">OCR_Rename_Exp</h1>
             <p className="text-xs text-gray-400 mt-0.5">CHE_25_0016_PRE_NB · Normal · output: CHF</p>
           </div>
-          {rates && (
-            <p className="text-xs text-gray-400 hidden sm:block max-w-sm text-right leading-relaxed">{rates.display}</p>
-          )}
+          <div className="flex items-center gap-3">
+            {rates && (
+              <p className="text-xs text-gray-400 hidden md:block max-w-xs text-right leading-relaxed">{rates.display}</p>
+            )}
+            <button
+              onClick={() => setShowCache(true)}
+              className="text-xs px-3 py-1.5 border border-gray-200 rounded-lg text-gray-500 hover:bg-gray-50 transition-colors"
+            >
+              Cache · {cacheStats.merchants}
+            </button>
+          </div>
         </div>
       </header>
 
@@ -175,6 +220,26 @@ export default function Home() {
           )
         })()}
 
+        {/* Cache panel */}
+        {showCache && (
+          <CachePanel
+            cache={cache}
+            stats={cacheStats}
+            onClose={() => setShowCache(false)}
+            onClear={() => {
+              localStorage.removeItem('ocr_expense_cache_v1')
+              setCache({})
+              setShowCache(false)
+            }}
+            onRemove={(key) => {
+              const updated = { ...cache }
+              delete updated[key]
+              setCache(updated)
+              localStorage.setItem('ocr_expense_cache_v1', JSON.stringify(updated))
+            }}
+          />
+        )}
+
         {/* Stats */}
         {expenses.length > 0 && (
           <div className="grid grid-cols-4 gap-3 mb-6">
@@ -192,10 +257,22 @@ export default function Home() {
           </div>
         )}
 
+        {/* Cache hit banner */}
+        {cachedCount > 0 && (
+          <div className="mb-4 text-xs text-teal-700 bg-teal-50 border border-teal-200 rounded-xl px-4 py-2.5">
+            {cachedCount} receipt{cachedCount !== 1 ? 's' : ''} classified instantly from cache — no API call needed
+          </div>
+        )}
+
         {/* Expense Rows */}
         <div className="space-y-2">
           {expenses.map(exp => (
-            <ExpenseRow key={exp.id} expense={exp} onReview={() => setReviewingId(exp.id)} onDownload={() => downloadFile(exp)} />
+            <ExpenseRow
+              key={exp.id}
+              expense={exp}
+              onReview={() => setReviewingId(exp.id)}
+              onDownload={() => downloadFile(exp)}
+            />
           ))}
         </div>
 
@@ -220,12 +297,15 @@ export default function Home() {
               {done.map(exp => (
                 <div key={exp.id} className="flex items-start justify-between text-xs py-2.5 border-b border-gray-100 last:border-0 gap-4">
                   <div className="min-w-0">
-                    <button
-                      onClick={() => downloadFile(exp)}
-                      className="font-mono text-blue-700 hover:text-blue-900 font-medium text-left underline underline-offset-2"
-                    >
-                      {exp.finalFilename}
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => downloadFile(exp)}
+                        className="font-mono text-blue-700 hover:text-blue-900 font-medium text-left underline underline-offset-2">
+                        {exp.finalFilename}
+                      </button>
+                      {exp.fromCache && (
+                        <span className="text-teal-600 bg-teal-50 px-1.5 py-0.5 rounded text-xs">cached</span>
+                      )}
+                    </div>
                     <div className="text-gray-400 mt-0.5 truncate">← {exp.fileName}</div>
                     {exp.fxNote && <div className="text-gray-400 mt-0.5 font-mono">{exp.fxNote}</div>}
                   </div>
@@ -241,7 +321,6 @@ export default function Home() {
             <p className="text-xs text-gray-400">
               Tip: set your browser download folder to{' '}
               <span className="font-mono">C:\Users\NicolasCourtial\OneDrive - Avvale S.p.A\Documents\9. Admin\Expenses\</span>
-              {' '}so files land in the right place automatically.
             </p>
           </div>
         )}
@@ -279,14 +358,14 @@ function ExpenseRow({ expense: exp, onReview, onDownload }: {
               </span>
               {exp.language && <span className="text-xs px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded font-mono">{exp.language}</span>}
               {category && <span className="text-xs px-1.5 py-0.5 bg-blue-50 text-blue-700 rounded font-mono">{category.code}</span>}
-              {exp.confidence === 'HIGH' && <span className="text-xs px-1.5 py-0.5 bg-green-50 text-green-700 rounded">✓</span>}
+              {exp.fromCache && <span className="text-xs px-1.5 py-0.5 bg-teal-50 text-teal-700 rounded">cached</span>}
+              {!exp.fromCache && exp.confidence === 'HIGH' && <span className="text-xs px-1.5 py-0.5 bg-green-50 text-green-700 rounded">✓</span>}
             </div>
             {exp.finalFilename && <div className="text-xs font-mono text-gray-400 mt-0.5">{exp.finalFilename}</div>}
             {exp.review_reason && <div className="text-xs text-amber-700 mt-0.5">{exp.review_reason}</div>}
             {exp.error && <div className="text-xs text-red-600 mt-0.5">{exp.error}</div>}
           </div>
         </div>
-
         <div className="flex items-center gap-3 flex-shrink-0">
           {exp.chfAmount != null && (
             <div className="text-right">
@@ -308,10 +387,70 @@ function ExpenseRow({ expense: exp, onReview, onDownload }: {
           )}
           {exp.status === 'done' && exp.finalFilename && (
             <button onClick={onDownload}
-              className="text-xs px-3 py-1.5 bg-gray-100 border border-gray-200 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors font-medium">
+              className="text-xs px-3 py-1.5 bg-gray-100 border border-gray-200 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors">
               ↓
             </button>
           )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function CachePanel({ cache, stats, onClose, onClear, onRemove }: {
+  cache: MatchCache
+  stats: ReturnType<typeof getCacheStats>
+  onClose: () => void
+  onClear: () => void
+  onRemove: (key: string) => void
+}) {
+  const entries = Object.entries(cache).sort((a, b) => b[1].hits - a[1].hits)
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full max-h-[80vh] flex flex-col">
+        <div className="flex items-center justify-between p-6 border-b border-gray-100">
+          <div>
+            <h2 className="text-sm font-semibold text-gray-900">Merchant cache</h2>
+            <p className="text-xs text-gray-400 mt-0.5">{stats.merchants} merchants · {stats.totalHits} total matches</p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg px-2">×</button>
+        </div>
+        <div className="overflow-y-auto flex-1 p-4">
+          {entries.length === 0 ? (
+            <p className="text-xs text-gray-400 text-center py-8">No cached merchants yet. Process some receipts first.</p>
+          ) : (
+            <div className="space-y-1">
+              {entries.map(([key, entry]) => (
+                <div key={key} className="flex items-center justify-between text-xs py-2 px-3 rounded-lg hover:bg-gray-50 group">
+                  <div className="min-w-0">
+                    <span className="font-mono text-gray-800 font-medium">{key}</span>
+                    <span className="ml-2 text-gray-400">→</span>
+                    <span className="ml-2 text-blue-700 font-mono">{entry.category}</span>
+                    {entry.source === 'manual' && <span className="ml-2 text-purple-600">manual</span>}
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0 ml-4">
+                    <span className="text-gray-400">{entry.hits}×</span>
+                    <button
+                      onClick={() => onRemove(key)}
+                      className="text-red-400 hover:text-red-600 opacity-0 group-hover:opacity-100 transition-opacity px-1"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="p-4 border-t border-gray-100 flex justify-between">
+          <button onClick={onClear}
+            className="text-xs text-red-500 hover:text-red-700 px-3 py-1.5 border border-red-200 rounded-lg hover:bg-red-50 transition-colors">
+            Clear all
+          </button>
+          <button onClick={onClose}
+            className="text-xs px-4 py-1.5 bg-gray-900 text-white rounded-lg hover:bg-gray-700 transition-colors">
+            Done
+          </button>
         </div>
       </div>
     </div>
@@ -343,7 +482,6 @@ function ReviewCard({ expense: exp, dateOnly, onConfirm, onSkip }: {
           {exp.merchant || exp.fileName}
           {exp.review_reason && ` — ${exp.review_reason}`}
         </p>
-
         <div className="space-y-4">
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1.5">
@@ -353,7 +491,6 @@ function ReviewCard({ expense: exp, dateOnly, onConfirm, onSkip }: {
               onChange={e => setDate(e.target.value)}
               className="w-full border border-gray-300 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
           </div>
-
           {!dateOnly && (
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1.5">Category</label>
@@ -366,7 +503,6 @@ function ReviewCard({ expense: exp, dateOnly, onConfirm, onSkip }: {
               </select>
             </div>
           )}
-
           {exp.chfAmount != null && (
             <div className="bg-gray-50 rounded-xl px-4 py-3 text-xs text-gray-600">
               <span className="font-semibold text-gray-800">{exp.chfAmount.toFixed(2)} CHF</span>
@@ -374,10 +510,10 @@ function ReviewCard({ expense: exp, dateOnly, onConfirm, onSkip }: {
             </div>
           )}
         </div>
-
         <div className="flex justify-between items-center mt-6">
           <button onClick={onSkip} className="text-xs text-gray-400 hover:text-gray-600 px-2 py-1">Skip file</button>
-          <button onClick={() => { if (valid) onConfirm(date.replace(/-/g,''), category || exp.category_code || '') }}
+          <button
+            onClick={() => { if (valid) onConfirm(date.replace(/-/g,''), category || exp.category_code || '') }}
             disabled={!valid}
             className="text-sm px-5 py-2.5 bg-gray-900 text-white rounded-xl hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors font-medium">
             Confirm & continue
