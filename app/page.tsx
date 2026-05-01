@@ -37,6 +37,26 @@ interface RatesInfo { display: string; fetchedDate: string }
 
 const CATEGORY_LIST = Object.values(CATEGORIES)
 
+function buildManifest(exps: ExtractedExpense[]): string {
+  const manifest = exps.map(exp => {
+    const category = exp.resolvedCategory ? CATEGORIES[exp.resolvedCategory] : null
+    return {
+      filename: exp.finalFilename,
+      date: exp.resolvedDate,
+      category_code: exp.resolvedCategory,
+      category_label: category ? `${category.name} (${category.code})` : exp.resolvedCategory,
+      amount_chf: exp.chfAmount ? parseFloat(exp.chfAmount.toFixed(2)) : null,
+      amount_original: exp.amount ? parseFloat(exp.amount.toFixed(2)) : null,
+      currency_original: exp.currency,
+      notes: exp.fxNote
+        ? `${exp.merchant || ''} — ${exp.fxNote}`.trim()
+        : (exp.merchant || ''),
+      merchant: exp.merchant,
+    }
+  })
+  return JSON.stringify(manifest, null, 2)
+}
+
 function downloadFile(exp: ExtractedExpense) {
   if (!exp.finalFilename || !exp.file) return
   const url = URL.createObjectURL(exp.file)
@@ -60,6 +80,14 @@ export default function Home() {
   const [dragOver, setDragOver] = useState(false)
   const [reviewingId, setReviewingId] = useState<string | null>(null)
   const [showCache, setShowCache] = useState(false)
+  const [manifestCopied, setManifestCopied] = useState(false)
+
+  const copyManifest = async () => {
+    const json = buildManifest(done)
+    await navigator.clipboard.writeText(json)
+    setManifestCopied(true)
+    setTimeout(() => setManifestCopied(false), 3000)
+  }
   const [cache, setCache] = useState<MatchCache>({})
   const fileInputRef = useRef<HTMLInputElement>(null)
   const processedFilenamesRef = useRef<string[]>([])
@@ -318,10 +346,28 @@ export default function Home() {
                 </div>
               ))}
             </div>
-            <p className="text-xs text-gray-400">
-              Tip: set your browser download folder to{' '}
-              <span className="font-mono">C:\Users\NicolasCourtial\OneDrive - Avvale S.p.A\Documents\9. Admin\Expenses\</span>
-            </p>
+            <div className="border-t border-gray-100 pt-4 mt-2">
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <p className="text-xs font-medium text-gray-700">Phase 2 — Post to Avvale</p>
+                  <p className="text-xs text-gray-400 mt-0.5">Download files first, then copy the manifest and paste it to Claude in chat</p>
+                </div>
+                <button
+                  onClick={copyManifest}
+                  className={`text-xs px-4 py-2 rounded-lg font-medium transition-all ${
+                    manifestCopied
+                      ? 'bg-green-600 text-white'
+                      : 'bg-blue-600 text-white hover:bg-blue-700'
+                  }`}
+                >
+                  {manifestCopied ? '✓ Copied!' : 'Copy Phase 2 manifest'}
+                </button>
+              </div>
+              <p className="text-xs text-gray-400">
+                Set browser download folder to{'  '}
+                <span className="font-mono">C:\Users\NicolasCourtial\OneDrive - Avvale S.p.A\Documents\9. Admin\Expenses\</span>
+              </p>
+            </div>
           </div>
         )}
       </main>
