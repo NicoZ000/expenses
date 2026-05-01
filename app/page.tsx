@@ -138,7 +138,7 @@ export default function Home() {
 
       let finalFilename: string | undefined
       if (!needsFullReview && !needsDateOnly && data.date && data.category_code) {
-        finalFilename = buildFilename(data.date, data.category_code, processedFilenamesRef.current)
+        finalFilename = buildFilename(data.date, data.category_code, processedFilenamesRef.current, data.chfAmount, data.merchant)
         processedFilenamesRef.current.push(finalFilename)
         // Save to cache
         if (data.merchant) updateCache(data.merchant, data.category_code, 'auto')
@@ -178,7 +178,7 @@ export default function Home() {
   const confirmReview = (id: string, date: string, category: string) => {
     setExpenses(prev => prev.map(e => {
       if (e.id !== id) return e
-      const filename = buildFilename(date, category, processedFilenamesRef.current)
+      const filename = buildFilename(date, category, processedFilenamesRef.current, e.chfAmount, e.merchant)
       processedFilenamesRef.current.push(filename)
       // Manual correction — save to cache with higher weight
       if (e.merchant) updateCache(e.merchant, category, 'manual')

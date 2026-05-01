@@ -119,29 +119,34 @@ Return this exact JSON structure:
 export function buildFilename(
   date: string,
   categoryCode: string,
-  existingFiles: string[]
+  existingFiles: string[],
+  chfAmount?: number,
+  merchant?: string
 ): string {
   const category = CATEGORIES[categoryCode]
   if (!category) throw new Error(`Unknown category: ${categoryCode}`)
 
   const prefix = category.prefix
-  const base = `${date}_${prefix}`
 
-  // Find if any existing files share same date+prefix
+  const amountSuffix = chfAmount != null
+    ? '_' + chfAmount.toFixed(2).replace('.', '_')
+    : ''
+
+  const vendorSuffix = merchant
+    ? '_' + merchant.replace(/[^a-zA-Z0-9]/g, '').slice(0, 5)
+    : ''
+
+  const base = `${date}_${prefix}${amountSuffix}${vendorSuffix}`
+
   const conflicts = existingFiles.filter(f => f.startsWith(base))
   if (conflicts.length === 0) return `${base}.pdf`
 
-  // Find max increment
   let max = 0
   for (const f of conflicts) {
     const match = f.match(/_(\d+)\.pdf$/)
     if (match) max = Math.max(max, parseInt(match[1]))
-    else max = Math.max(max, 0) // un-numbered = 0
+    else max = Math.max(max, 0)
   }
-
-  // If there's exactly one un-numbered, rename concept: first gets no number, subsequent get _1, _2...
-  // Actually: first = no suffix, second onwards = _1, _2...
-  // So if conflicts has 1 file (un-numbered), next is _1
   return `${base}_${max + 1}.pdf`
 }
 
