@@ -32,6 +32,25 @@ interface RatesInfo { display: string; fetchedDate: string }
 
 const CATEGORY_LIST = Object.values(CATEGORIES)
 
+function downloadFile(exp: ExtractedExpense) {
+  if (!exp.finalFilename || !exp.file) return
+  const url = URL.createObjectURL(exp.file)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = exp.finalFilename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+function downloadAll(exps: ExtractedExpense[]) {
+  // Stagger downloads slightly so browser doesn't block them
+  exps.forEach((exp, i) => {
+    setTimeout(() => downloadFile(exp), i * 300)
+  })
+}
+
 export default function Home() {
   const [expenses, setExpenses] = useState<ExtractedExpense[]>([])
   const [rates, setRates] = useState<RatesInfo | null>(null)
@@ -176,24 +195,37 @@ export default function Home() {
         {/* Expense Rows */}
         <div className="space-y-2">
           {expenses.map(exp => (
-            <ExpenseRow key={exp.id} expense={exp} onReview={() => setReviewingId(exp.id)} />
+            <ExpenseRow key={exp.id} expense={exp} onReview={() => setReviewingId(exp.id)} onDownload={() => downloadFile(exp)} />
           ))}
         </div>
 
-        {/* Summary */}
+        {/* Summary + Download */}
         {done.length > 0 && !processing && review.length === 0 && (
           <div className="mt-8 bg-white border border-gray-200 rounded-2xl p-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-sm font-semibold text-gray-900">
                 {done.length} expense{done.length !== 1 ? 's' : ''} ready
               </h2>
-              <span className="text-xs text-green-700 bg-green-50 px-2 py-1 rounded-full">Phase 1 complete</span>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-green-700 bg-green-50 px-2 py-1 rounded-full">Phase 1 complete</span>
+                <button
+                  onClick={() => downloadAll(done)}
+                  className="text-xs px-4 py-1.5 bg-gray-900 text-white rounded-lg hover:bg-gray-700 transition-colors font-medium"
+                >
+                  Download all ({done.length})
+                </button>
+              </div>
             </div>
             <div className="space-y-2 mb-5">
               {done.map(exp => (
                 <div key={exp.id} className="flex items-start justify-between text-xs py-2.5 border-b border-gray-100 last:border-0 gap-4">
                   <div className="min-w-0">
-                    <div className="font-mono text-gray-800 font-medium">{exp.finalFilename}</div>
+                    <button
+                      onClick={() => downloadFile(exp)}
+                      className="font-mono text-blue-700 hover:text-blue-900 font-medium text-left underline underline-offset-2"
+                    >
+                      {exp.finalFilename}
+                    </button>
                     <div className="text-gray-400 mt-0.5 truncate">← {exp.fileName}</div>
                     {exp.fxNote && <div className="text-gray-400 mt-0.5 font-mono">{exp.fxNote}</div>}
                   </div>
@@ -207,7 +239,9 @@ export default function Home() {
               ))}
             </div>
             <p className="text-xs text-gray-400">
-              Save to: <span className="font-mono">C:\Users\NicolasCourtial\OneDrive - Avvale S.p.A\Documents\9. Admin\Expenses\</span>
+              Tip: set your browser download folder to{' '}
+              <span className="font-mono">C:\Users\NicolasCourtial\OneDrive - Avvale S.p.A\Documents\9. Admin\Expenses\</span>
+              {' '}so files land in the right place automatically.
             </p>
           </div>
         )}
@@ -216,7 +250,9 @@ export default function Home() {
   )
 }
 
-function ExpenseRow({ expense: exp, onReview }: { expense: ExtractedExpense; onReview: () => void }) {
+function ExpenseRow({ expense: exp, onReview, onDownload }: {
+  expense: ExtractedExpense; onReview: () => void; onDownload: () => void
+}) {
   const statusConfig: Record<string, { dot: string; label: string }> = {
     pending:    { dot: 'bg-gray-300', label: 'Waiting' },
     processing: { dot: 'bg-blue-400 animate-pulse', label: 'Scanning...' },
@@ -268,6 +304,12 @@ function ExpenseRow({ expense: exp, onReview }: { expense: ExtractedExpense; onR
             <button onClick={onReview}
               className="text-xs px-3 py-1.5 bg-amber-100 border border-amber-300 text-amber-800 rounded-lg hover:bg-amber-200 transition-colors font-medium">
               Review ↗
+            </button>
+          )}
+          {exp.status === 'done' && exp.finalFilename && (
+            <button onClick={onDownload}
+              className="text-xs px-3 py-1.5 bg-gray-100 border border-gray-200 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors font-medium">
+              ↓
             </button>
           )}
         </div>
