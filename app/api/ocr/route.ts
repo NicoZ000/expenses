@@ -27,7 +27,7 @@ export async function POST(req: NextRequest) {
         'x-api-key': process.env.ANTHROPIC_API_KEY || '',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: 1024,
         system: CLASSIFICATION_SYSTEM_PROMPT,
         messages: [
